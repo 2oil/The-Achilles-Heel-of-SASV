@@ -2,15 +2,26 @@ import torch
 import torch.nn as nn
 import numpy as np
 from ..attack import Attack
+import random
 
 class CM_PGD(Attack):
-    def __init__(self, model, device, eps=0.007, alpha=0.001, steps=10):
+    def __init__(self, model, device, eps=0.007, alpha=0.001, steps=10, seed=None):
         super().__init__("PGD", model)
         self.eps = eps
         self.alpha = alpha
         self.steps = steps
         self.device = device
         self._supported_mode = ['default', 'targeted']
+        self.seed = seed 
+        if self.seed is not None:
+            random.seed(self.seed)
+            np.random.seed(self.seed)
+            torch.manual_seed(self.seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(self.seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            print(f"Seed fixed to {self.seed}")
 
     def forward(self, images, labels):
         images = images.clone().detach().to(self.device)

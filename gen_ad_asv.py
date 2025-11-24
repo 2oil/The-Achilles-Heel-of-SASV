@@ -16,6 +16,7 @@ def parse_argument():
     parser.add_argument('--output_path', type=str, required=True, help='Feature output path')
     parser.add_argument('--adv_method1', type=str, required=True, help='Adversarial attack method 1')
     parser.add_argument('--out_format', type=str, default="flac", help='Output format (default: flac)')
+    parser.add_argument('--seed', type=int, default=251, help='Random seed for reproducibility')
 
     return parser.parse_args()
 
@@ -31,18 +32,25 @@ def main():
         "out_format": args.out_format,
         "batch_size": args.batch_size,
 
+# Choose surrogate model
+
         "model_name": "resnetse34v2",
         "model_pretrained": "./ResNetModels/baseline_v2_ap.model",  
 
         # "model_name": "ecapa_tdnn",
-        # "model_pretrained": "./pretrain.model",  
+        # "model_pretrained": "./pretrained/pretrain.model",  
 
-        "eval_list": "/your/path/LA/ASVspoof2019_LA_asv_protocols/ASVspoof2019.LA.asv.eval.gi.trl.txt",
+        # "model_name": "next_tdnn",
+        # "model_pretrained": "./pretrained/model.pt",
+
+        "eval_list": "./PeerJ/protocol/ASVspoof2019.csv",
         "enroll_path": "./enr_audio/eval",
 
         "device": "cuda",
         "adv_method1": args.adv_method1,
         "input_path": args.input_path,
+
+        "seed": args.seed
     }
 
     file_path = config["eval_list"]
