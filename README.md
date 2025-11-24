@@ -1,4 +1,4 @@
-````markdown
+
 # The Achilles’ Heel of Spoofing-Aware Speaker Verification: A Module-Level Analysis of Adversarial Vulnerabilities
 
 This repository contains the official implementation of the adversarial attack framework proposed in:
@@ -261,6 +261,3 @@ If you have questions, need the PDF, or are interested in collaboration, feel fr
 
 **Yowon Lee**
 ✉️ `agent251@soongsil.ac.kr`
-
-```
-```
