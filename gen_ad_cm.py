@@ -26,6 +26,7 @@ def parse_argument():
     parser.add_argument('--out_format', type=str, default="flac", required=False, help='Output format. \n'
                         +'Suported: flac, ogg, mp3, wav. Default: flac. \n'
                         +'Encode by pydub + ffmpeg. Please install ffmpeg first. \n')
+    parser.add_argument('--seed', type=int, default=251, help='Random seed for reproducibility')
     
     # load argument
     args = parser.parse_args()
@@ -43,29 +44,30 @@ def main():
             "output_path": args.output_path,
             "out_format": args.out_format,
             "batch_size": args.batch_size,
-            
-            #"model_name": "aasist",
-            #"model_pretrained": "/home/eoil/aasist/models/weights/AASIST.pth",
-            #"config_path": "./AASIST_conf.yaml",
 
-            "model_name": "aasistssl",
-            "model_pretrained": "./LA_model.pth",
-            "ssl_model": "./xlsr2_300m.pt",
+# Choose Surrogate Model
+            
+            "model_name": "aasist",
+            "model_pretrained": "/home/eoil/aasist/models/weights/AASIST.pth",
+            "config_path": "./AASIST_conf.yaml",
+
+            # "model_name": "aasistssl",
+            # "model_pretrained": "./pretrained/LA_model.pth",
 
             # "model_name": "conformer_tcm",
             # "model_pretrained": "./best_4.pth",
 
-            #"model_name": "rawnet2",
-            #"model_pretrained": "./pretrained_rawnet2/pre_trained_DF_RawNet2.pth",
-            
+            # "model_name": "rawnet2",
+            # "model_pretrained": "./pretrained_rawnet2/pre_trained_DF_RawNet2.pth",
             
             "device": "cuda",
 
             "adv_method1": args.adv_method1,
             "input_path": args.input_path,
+
+            "seed": args.seed
         }
-   
-    file_path = '/your/path/LA/ASVspoof2019_LA_asv_protocols/ASVspoof2019.LA.asv.eval.gi.trl.txt' 
+    file_path = './PeerJ/protocol/ASVspoof2019.csv' 
     protocol_df = pd.read_csv(file_path, sep=" ", header=None, names=["utt1", "utt2", "label", "type"])
 
     filenames = protocol_df["utt2"].apply(lambda x: os.path.join(args.input_path, f"{x}.flac")).tolist()
@@ -74,9 +76,6 @@ def main():
     ana = AdversarialNoiseAugmentor(config)
     ana.load_batch(filenames, labels)
     ana.transform_batch(protocol_df)
-    
-
 
 if __name__ == '__main__':
     main()
-

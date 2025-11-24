@@ -18,16 +18,18 @@ from .utils import librosa_to_pydub
 from src.aa import utils
 from src.aa.aa_types import AttackEnum
 from ResNetModels.ResNetSE34V2 import MainModel
+import sys
+sys.path.append("/home/eoil/AGENT/next_tdnn")
 
 SUPPORTED_CM = ["aasistssl","aasist","conformer_tcm","rawnet2"]
-SUPPORTED_ASV = ["resnetse34v2","ecapa_tdnn"]
+SUPPORTED_ASV = ["resnetse34v2","ecapa_tdnn","next_tdnn"]
 SUPPORTED_ADV = [
     "CM_FGSM_0001", "CM_FGSM_0003", "CM_FGSM_0005", "CM_FGSM_0007", 
-    "CM_BIM_0001", "CM_BIM_0003", "CM_BIM_0005", "CM_BIM_0007",
+    "CM_BIM_0001", "CM_BIM_0003", "CM_BIM_0005", "CM_BIM_0007", 
     "CM_PGD_0001", "CM_PGD_0003", "CM_PGD_0005", "CM_PGD_0007",
     "ASV_FGSM_0001", "ASV_FGSM_0003", "ASV_FGSM_0005", "ASV_FGSM_0007", 
-    "ASV_BIM_0001", "ASV_BIM_0003", "ASV_BIM_0005", "ASV_BIM_0007",
-    "ASV_PGD_0001", "ASV_PGD_0003", "ASV_PGD_0005", "ASV_PGD_0007"
+    "ASV_BIM_0001", "ASV_BIM_0003", "ASV_BIM_0005", "ASV_BIM_0007", 
+    "ASV_PGD_0001", "ASV_PGD_0003", "ASV_PGD_0005", "ASV_PGD_0007",
 ]
 
 import logging
@@ -70,14 +72,21 @@ class AdversarialNoiseAugmentor(BaseAugmentor):
         if self.model_name == "aasist":
             with open(config["config_path"], "r") as f:
                 config_path = yaml.safe_load(f)
-            self.artmodel = Aasist(config_path['model_config'], device=self.device).to(self.device)
-            self.artmodel.load_state_dict(torch.load(self.model_pretrained, map_location=self.device))
-            self.artmodel.eval()
+                self.artmodel = Aasist(config_path['model_config'], device=self.device).to(self.device)
+                state_dict = torch.load(self.model_pretrained, map_location=self.device)
+                self.artmodel.load_state_dict(state_dict, strict=True)
+                self.artmodel = nn.DataParallel(self.artmodel).to(self.device)
+                self.artmodel.eval()
+
 
         elif self.model_name == "aasistssl":
-            self.artmodel = AasistSSL(ssl_model=config["ssl_model"], device=self.device)
+            self.artmodel = AasistSSL(device=self.device)
             self.artmodel = nn.DataParallel(self.artmodel).to(self.device)
-            self.artmodel.load_state_dict(torch.load(self.model_pretrained, map_location=self.device), strict=False)
+
+            ckpt = torch.load(self.model_pretrained, map_location=self.device)
+            ckpt = {f"module.{k}" if not k.startswith("module.") else k: v for k, v in ckpt.items()}
+
+            self.artmodel.load_state_dict(ckpt, strict=False)
             self.artmodel.eval()
 
         elif self.model_name == "conformer_tcm":
@@ -126,17 +135,134 @@ class AdversarialNoiseAugmentor(BaseAugmentor):
 
             self.artmodel.load_state_dict(new_state_dict, strict=True)
             self.artmodel.eval()
+        
+        elif self.model_name == "next_tdnn":
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("asv_config", "/home/eoil/AGENT/next_tdnn/NeXt_TDNN_C256_B3_K65_7_cyclical_lr_step.py")
+            cfg = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(cfg)
+
+            fe_module = importlib.import_module('preprocessing.' + cfg.FEATURE_EXTRACTOR)
+            feature_extractor = fe_module.feature_extractor(**cfg.FEATURE_EXTRACTOR_CONFIG)
+
+            model_module = importlib.import_module('models.' + cfg.MODEL)
+            model = model_module.MainModel(**cfg.MODEL_CONFIG)
+
+            agg_module = importlib.import_module('aggregation.' + cfg.AGGREGATION)
+            aggregation = agg_module.Aggregation(**cfg.AGGREGATION_CONFIG)
+
+            from SpeakerNet import SpeakerNet
+            model = SpeakerNet(
+                feature_extractor=feature_extractor,
+                spec_aug=None,
+                model=model,
+                aggregation=aggregation,
+                loss_function=None
+            ).to(self.device)
+
+            checkpoint = torch.load(cfg.TEST_CHECKPOINT, map_location=self.device)
+
+            if "state_dict" in checkpoint:
+                state_dict = {
+                    k.replace("speaker_net.", ""): v
+                    for k, v in checkpoint["state_dict"].items()
+                }
+            else:
+                state_dict = {
+                    k.replace("speaker_net.", ""): v
+                    for k, v in checkpoint.items()
+                }
+
+            model.load_state_dict(state_dict, strict=True)
+            model.eval()
+            self.artmodel = model
+
         else:
-            raise ValueError(f"Unsupported model_name: {self.model_name}")
+            raise ValueError(f"Unsupported ASV model: {config['asv_model_name']}")
+
 
         if target_module == "ASV":
             self.asv_model = self.artmodel  
-
             self.adv_class1 = attack_method1(
                 asv_model=self.asv_model,
                 enroll_path=config["enroll_path"],
                 input_path=config["input_path"],
-                device=self.device
+                device=self.device,
+                seed=config.get("seed", None), 
+                **attack_params1 
+            )
+
+        elif target_module == "BOTH":
+            # Load ASV model separately
+            if config["asv_model_name"] == "resnetse34v2":
+                self.asv_model = MainModel().to(self.device)
+                self._load_parameters(self.asv_model, config["asv_model_pretrained"])
+                self.asv_model.eval()
+
+            elif config["asv_model_name"] == "ecapa_tdnn":
+                self.asv_model = ECAPA_TDNN(C=1024).to(self.device)
+                asv_ckpt = torch.load(config["asv_model_pretrained"], map_location=self.device)
+                state_dict = asv_ckpt["model"] if "model" in asv_ckpt else asv_ckpt
+                new_state_dict = {
+                    k.replace("speaker_encoder.", ""): v
+                    for k, v in state_dict.items()
+                    if k.startswith("speaker_encoder.")
+                }
+                self.asv_model.load_state_dict(new_state_dict, strict=True)
+                self.asv_model.eval()
+                
+            elif config["asv_model_name"] == "next_tdnn":
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("asv_config", "/home/eoil/AGENT/next_tdnn/NeXt_TDNN_C256_B3_K65_7_cyclical_lr_step.py")
+                cfg = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(cfg)
+
+                fe_module = importlib.import_module('preprocessing.' + cfg.FEATURE_EXTRACTOR)
+                feature_extractor = fe_module.feature_extractor(**cfg.FEATURE_EXTRACTOR_CONFIG)
+
+                model_module = importlib.import_module('models.' + cfg.MODEL)
+                model = model_module.MainModel(**cfg.MODEL_CONFIG)
+
+                agg_module = importlib.import_module('aggregation.' + cfg.AGGREGATION)
+                aggregation = agg_module.Aggregation(**cfg.AGGREGATION_CONFIG)
+
+                from SpeakerNet import SpeakerNet
+                model = SpeakerNet(
+                    feature_extractor=feature_extractor,
+                    spec_aug=None,
+                    model=model,
+                    aggregation=aggregation,
+                    loss_function=None
+                ).to(self.device)
+
+                checkpoint = torch.load(cfg.TEST_CHECKPOINT, map_location=self.device)
+
+                if "state_dict" in checkpoint:
+                    state_dict = {
+                        k.replace("speaker_net.", ""): v
+                        for k, v in checkpoint["state_dict"].items()
+                    }
+                else:
+                    state_dict = {
+                        k.replace("speaker_net.", ""): v
+                        for k, v in checkpoint.items()
+                    }
+
+                model.load_state_dict(state_dict, strict=True)
+                model.eval()
+                self.asv_model = model 
+
+            else:
+                raise ValueError(f"Unsupported ASV model: {config['asv_model_name']}")
+
+            self.cm_model = self.artmodel
+            self.adv_class1 = attack_method1(
+                asv_model=self.asv_model,
+                cm_model=self.cm_model,
+                enroll_path=config["enroll_path"],
+                input_path=config["input_path"],
+                device=self.device,
+                **attack_params1
             )
 
         else:
@@ -153,9 +279,8 @@ class AdversarialNoiseAugmentor(BaseAugmentor):
             k_clean = k.replace("module.", "").replace("speaker_encoder.", "").replace("__S__.", "")
             if k_clean in model.state_dict() and model.state_dict()[k_clean].shape == v.shape:
                 new_state[k_clean] = v
-        model.load_state_dict(new_state, strict=False)
+        model.load_state_dict(new_state, strict=True)
         print(f"✅ Loaded {len(new_state)} weights from {ckpt_path}")
-
 
 
     def load_batch(self, filenames, labels):
@@ -172,36 +297,33 @@ class AdversarialNoiseAugmentor(BaseAugmentor):
             self.labels.append(label)
             self.batched_filenames.append([filename])
 
-    
     def apply_adv_attack(self, batch_x, batch_y, target_spk, test_utterance):
         batch_x = batch_x.to(self.device)
         batch_y = batch_y.to(self.device)
 
         target_module = AttackEnum[self.adv_method1].target_module
-
         if target_module == "ASV":
-            # ASV attack needs target_spk, test_utterance
             result = self.adv_class1.forward(target_spk=target_spk, test_utterance=test_utterance)
-
-            if result is None:
-                print(f"[WARNING] Attack failed for {test_utterance}")
-                dummy_tensor = torch.zeros_like(batch_x)
-                return [0], [0], [0], [0], dummy_tensor
-
-            asv_before_score, after_cosine_sim, adv_audio = result
-            before_score, after_score = asv_before_score, after_cosine_sim
-            adv_images = torch.tensor(adv_audio).unsqueeze(0).to(self.device)
-
+        elif target_module == "CM":
+            result = self.adv_class1.forward(batch_x, batch_y)
         else:
-            # CM attack
-            before_score, after_score, adv_images = self.adv_class1(batch_x, batch_y)
-            asv_before_score, after_cosine_sim = [0], [0]  # dummy
+            raise ValueError(f"Unknown target module: {target_module}")
 
-        print(f"Before attack score: {before_score}, After attack score: {after_score}")
-        print(f"Adversarial example shape: {adv_images.shape}")
+        # if fail, return none
+        if result is None:
+            print(f"[ERROR] Failed to generate adversarial example for {test_utterance}")
+            return None
 
-        return before_score, after_score, asv_before_score, after_cosine_sim, adv_images
+        # result unpack
+        if target_module == "ASV":
+            asv_before_score, asv_after_score, adv_audio = result
+            adv_images = torch.tensor(adv_audio).unsqueeze(0).to(self.device)
+            return None, None, asv_before_score, asv_after_score, adv_images
 
+        elif target_module == "CM":
+            cm_before_score, cm_after_score, adv_audio = result
+            adv_images = torch.tensor(adv_audio).unsqueeze(0).to(self.device)
+            return cm_before_score, cm_after_score, None, None, adv_images
 
     
     def transform(self):
@@ -215,15 +337,26 @@ class AdversarialNoiseAugmentor(BaseAugmentor):
         raise NotImplementedError
     
     def transform_batch(self, protocol_df):
+        print(f"[DEBUG] protocol length = {len(protocol_df)}")
         attack_enum = AttackEnum[self.adv_method1]
-        target_module = attack_enum.target_module  # "CM" or "ASV"
+        target_module = attack_enum.target_module  # "CM", "ASV", or "BOTH"
 
-        adv_subdir = os.path.join(self.output_path, f"adv_examples/{self.adv_method1.lower()}")
+        adv_subdir = os.path.join(self.output_path, f"ASV_resnet/{self.adv_method1.lower()}")
         os.makedirs(adv_subdir, exist_ok=True)
-        # score file
-        log_file_path = os.path.join(adv_subdir, f"score_{target_module.lower()}.txt")
+
+        # log file path
+        log_file_path = os.path.join(
+            adv_subdir, 
+            f"score_{self.adv_method1.lower()}_{target_module.lower()}.txt"
+        )
+
         with open(log_file_path, "w") as log_file:
-            log_file.write("utt1\tutt2\tBefore_Score\tAfter_Score\n")
+            if target_module == "ASV":
+                log_file.write("utt1\tutt2\tasv_before\tasv_after\n")
+            elif target_module == "CM":
+                log_file.write("utt1\tutt2\tcm_before\tcm_after\n")
+            elif target_module == "BOTH":
+                log_file.write("utt1\tutt2\tcm_before\tcm_after\tasv_before\tasv_after\n")
 
         MAX_LEN = 32000
 
@@ -232,11 +365,13 @@ class AdversarialNoiseAugmentor(BaseAugmentor):
             utt1, utt2, utt_type = row["utt1"], row["utt2"], row["type"]
             target_spk, test_utt = utt1, utt2
 
+            # Skip trials
             if target_module == "CM" and utt_type != "spoof":
                 continue
             if target_module == "ASV" and utt_type != "nontarget":
                 continue
 
+            # Load test audio
             input_file = os.path.join(self.input_path, utt2 + ".flac")
             if not os.path.exists(input_file):
                 print(f"[WARNING] File not found: {input_file}")
@@ -246,24 +381,29 @@ class AdversarialNoiseAugmentor(BaseAugmentor):
             if len(audio_data) > MAX_LEN:
                 audio_data = audio_data[:MAX_LEN]
             batch = torch.tensor(audio_data).unsqueeze(0).to(self.device)
-
             label = 0 if utt_type in ['spoof', 'nontarget'] else 1
             label_tensor = torch.tensor([label], dtype=torch.long).to(self.device)
 
+            # Apply attack
             before_scores, after_scores, asv_before_score, after_cosine_sim, adv_images = \
                 self.apply_adv_attack(batch, label_tensor, target_spk, test_utt)
 
-            # save adv examples
-            output_audio_path = os.path.join(adv_subdir, utt2 + ".wav")
+            # Save adversarial audio
+            output_audio_path = os.path.join(adv_subdir, f"{utt2}_{utt1}.wav")
             os.makedirs(os.path.dirname(output_audio_path), exist_ok=True)
             attacked_sample = adv_images.detach().cpu().numpy().flatten()
             sf.write(output_audio_path, attacked_sample, 16000, format='WAV')
 
-            # score file
+            # save log
             with open(log_file_path, "a") as log_file:
-                for before_score, after_score in zip(
-                    np.atleast_1d(before_scores),
-                    np.atleast_1d(after_scores)
-                ):
-                    log_file.write(f"{utt1}\t{utt2}\t{float(before_score):.6f}\t{float(after_score):.6f}\n")
+                if target_module == "ASV":
+                    log_file.write(f"{utt1}\t{utt2}\t{float(asv_before_score):.6f}\t{float(after_cosine_sim):.6f}\n")
 
+                elif target_module == "CM":
+                    for before_score, after_score in zip(
+                        np.atleast_1d(before_scores),
+                        np.atleast_1d(after_scores)
+                    ):
+                        log_file.write(f"{utt1}\t{utt2}\t{float(before_score):.6f}\t{float(after_score):.6f}\n")
+
+                        
