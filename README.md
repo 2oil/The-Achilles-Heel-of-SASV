@@ -101,7 +101,7 @@ This framework assumes pretrained **CM** and **ASV** models. You can use the fol
 
 * **ECAPA-TDNN**
   [https://github.com/TaoRuijie/ECAPA-TDNN.git](https://github.com/TaoRuijie/ECAPA-TDNN.git)
-* **ResNet34v2 (Joint-Optimized SASV)**
+* **ResNet34v2**
   [https://github.com/eurecom-asp/sasv-joint-optimisation.git](https://github.com/eurecom-asp/sasv-joint-optimisation.git)
 * **NeXt-TDNN**
   [https://github.com/dmlguq456/NeXt_TDNN_ASV.git](https://github.com/dmlguq456/NeXt_TDNN_ASV.git)
