@@ -5,7 +5,7 @@ This repository contains the official implementation of the adversarial attack f
 
 > **“The Achilles’ Heel of Spoofing-Aware Speaker Verification: A Module-Level Analysis of Adversarial Vulnerabilities”**  
 > Yowon Lee, Thien-Phuc Doan, Sanghyun Hong, and Souhwan Jung  
-> *PeerJ Computer Science, under review*  
+> *PeerJ Computer Science*  
 
 ---
 
